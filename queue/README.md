@@ -23,4 +23,10 @@
 
 ### 不适用sync.Cond的原因
 
+- 没有控制超时的调用
+
 ### 不能仅依赖带缓冲的chan的原因
+
+## TODO
+
+1. 支持一个类似于sync.Cond.Wait(timeout)的调用
