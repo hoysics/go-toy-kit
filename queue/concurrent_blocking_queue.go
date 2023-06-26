@@ -35,6 +35,8 @@ func (c *ConcurrentBlockingQueue[T]) Enqueue(ctx context.Context, t T) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-c.notFull:
+			//Bug: 不管如何设置chan的大小 带缓存时就会存在漏信号的问题
+			// g3/g4等出队 阻塞; g1出队 刚好不满 发信号; g2再出队 不满足条件 不发信号; g3取了信号 走了 此时仍有空位 但没有信号给g4消费 g4继续阻塞
 			c.lock.Lock()
 		}
 	}
@@ -75,6 +77,8 @@ func (c *ConcurrentBlockingQueue[T]) Dequeue(ctx context.Context) (t T, err erro
 	// 如果有人在等待少个数据 则应该唤醒这个人 但是不能阻塞我自己
 	if c.size == len(c.data)-1 {
 		//只有从空变不空发信号
+		//Bug: 串行时如果恰巧没有取走上一轮信号/在0 1之间反复横跳，则此处会阻塞
+		// 满队列 没有入队的g在阻塞 g1出队 发信号 队列不满; g2紧跟着入队 队列又满 信号未消耗; g3出队 队列不满 发信号 此时上一轮信号未消费 则阻塞
 		c.notFull <- struct{}{}
 	}
 	c.lock.Unlock()
