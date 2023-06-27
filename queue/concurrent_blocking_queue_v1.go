@@ -8,11 +8,13 @@ import (
 var _ Queue[any] = &ConcurrentBlockingQueue[any]{}
 
 type ConcurrentBlockingQueue[T any] struct {
-	lock sync.Mutex
+	lock *sync.Mutex
 	data []any
 
-	notEmpty chan struct{}
-	notFull  chan struct{}
+	//notEmpty chan struct{}
+	//notFull  chan struct{}
+	notEmptyCond *cond
+	notFullCond  *cond
 
 	head int
 	tail int
@@ -20,24 +22,22 @@ type ConcurrentBlockingQueue[T any] struct {
 }
 
 func NewConcurrentBlockingQueue[T any](size int) *ConcurrentBlockingQueue[T] {
+	m := &sync.Mutex{}
 	return &ConcurrentBlockingQueue[T]{
-		data:     make([]any, size),
-		notEmpty: make(chan struct{}, 1),
-		notFull:  make(chan struct{}, 1),
+		data: make([]any, size),
+		//notEmpty: make(chan struct{}, 1),
+		//notFull:  make(chan struct{}, 1),
+		lock:         m,
+		notEmptyCond: &cond{Cond: sync.NewCond(m)},
+		notFullCond:  &cond{Cond: sync.NewCond(m)},
 	}
 }
 
 func (c *ConcurrentBlockingQueue[T]) Enqueue(ctx context.Context, t T) error {
 	c.lock.Lock()
-	for c.IsFull() {
-		c.lock.Unlock()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-c.notFull:
-			//Bug: 不管如何设置chan的大小 带缓存时就会存在漏信号的问题
-			// g3/g4等出队 阻塞; g1出队 刚好不满 发信号; g2再出队 不满足条件 不发信号; g3取了信号 走了 此时仍有空位 但没有信号给g4消费 g4继续阻塞
-			c.lock.Lock()
+	for c.isFull() {
+		if err := c.notFullCond.WaitWithTimeout(ctx); err != nil {
+			return err
 		}
 	}
 	c.data[c.tail] = t
@@ -47,26 +47,18 @@ func (c *ConcurrentBlockingQueue[T]) Enqueue(ctx context.Context, t T) error {
 	}
 	c.size++
 	// 如果有人在等待有数据 则应该唤醒这个人 但是不能阻塞我自己
-	if c.size == 1 {
-		// 只有从满变不满发信号
-		c.notEmpty <- struct{}{}
-	}
+	c.notEmptyCond.Signal()
 	c.lock.Unlock()
 	return nil
 }
 
 func (c *ConcurrentBlockingQueue[T]) Dequeue(ctx context.Context) (t T, err error) {
 	c.lock.Lock()
-	for c.IsEmpty() {
-		c.lock.Unlock()
-		// 注意这两步的时间差
-		select {
-		case <-ctx.Done():
-			err = ctx.Err()
+	for c.isEmpty() {
+		if err = c.notEmptyCond.WaitWithTimeout(ctx); err != nil {
 			return
-		case <-c.notEmpty:
-			c.lock.Lock()
 		}
+
 	}
 	t = c.data[c.head]
 	c.head++
@@ -75,12 +67,7 @@ func (c *ConcurrentBlockingQueue[T]) Dequeue(ctx context.Context) (t T, err erro
 	}
 	c.size--
 	// 如果有人在等待少个数据 则应该唤醒这个人 但是不能阻塞我自己
-	if c.size == len(c.data)-1 {
-		//只有从空变不空发信号
-		//Bug: 串行时如果恰巧没有取走上一轮信号/在0 1之间反复横跳，则此处会阻塞
-		// 满队列 没有入队的g在阻塞 g1出队 发信号 队列不满; g2紧跟着入队 队列又满 信号未消耗; g3出队 队列不满 发信号 此时上一轮信号未消费 则阻塞
-		c.notFull <- struct{}{}
-	}
+	c.notFullCond.Signal()
 	c.lock.Unlock()
 	return
 }
@@ -88,12 +75,22 @@ func (c *ConcurrentBlockingQueue[T]) Dequeue(ctx context.Context) (t T, err erro
 func (c *ConcurrentBlockingQueue[T]) IsEmpty() bool {
 	c.lock.Lock()
 	defer c.lock.Unlock()
+	return c.isEmpty()
+}
+
+// 封装一层 避免内部方法使用时重复加锁
+func (c *ConcurrentBlockingQueue[T]) isEmpty() bool {
 	return c.size == 0
 }
 
 func (c *ConcurrentBlockingQueue[T]) IsFull() bool {
 	c.lock.Lock()
 	defer c.lock.Unlock()
+	return c.isFull()
+}
+
+// 封装一层 避免内部方法使用时重复加锁
+func (c *ConcurrentBlockingQueue[T]) isFull() bool {
 	return c.size == len(c.data)
 }
 
@@ -101,4 +98,35 @@ func (c *ConcurrentBlockingQueue[T]) Len() int {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	return c.size
+}
+
+/**
+sync.Cond.WithTimeout
+*/
+// solution 1
+type cond struct {
+	*sync.Cond
+}
+
+func (c *cond) WaitWithTimeout(ctx context.Context) error {
+	ch := make(chan struct{})
+	go func() {
+		c.Cond.Wait()
+		select {
+		case ch <- struct{}{}:
+		default:
+			c.Cond.Signal()
+			c.Cond.L.Unlock()
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-ch:
+		return nil
+	}
+}
+
+func (c *cond) Single() {
+	c.Cond.Signal()
 }
