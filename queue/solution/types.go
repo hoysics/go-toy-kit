@@ -1,4 +1,4 @@
-package queue
+package solution
 
 import (
 	"context"
@@ -9,5 +9,5 @@ type Queue[T any] interface {
 	Dequeue(context.Context) (T, error)
 	IsEmpty() bool
 	IsFull() bool
-	Len() uint64
+	Len() int
 }
