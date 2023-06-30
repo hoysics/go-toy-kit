@@ -16,23 +16,29 @@ type ConcurrentBlockingQueue[T any] struct {
 	notEmptyCond *Cond
 	notFullCond  *Cond
 
-	//head int
-	//tail int
-	//size int
+	head    int
+	tail    int
+	size    int
 	maxSize int
+
+	zero T
 }
 
-func NewConcurrentBlockingQueue[T any](size int) *ConcurrentBlockingQueue[T] {
+func NewConcurrentBlockingQueue[T any](maxSize int) *ConcurrentBlockingQueue[T] {
 	m := &sync.Mutex{}
 	return &ConcurrentBlockingQueue[T]{
-		data: make([]T, 0, size),
-		//notEmpty: make(chan struct{}, 1),
-		//notFull:  make(chan struct{}, 1),
-		maxSize:      size,
+		data:         make([]T, maxSize),
+		maxSize:      maxSize,
 		lock:         m,
 		notEmptyCond: NewCond(m),
 		notFullCond:  NewCond(m),
 	}
+}
+
+func (c *ConcurrentBlockingQueue[T]) Get(index int) (T, error) {
+	//TODO 支持随机访问
+	var t T
+	return t, nil
 }
 
 func (c *ConcurrentBlockingQueue[T]) Enqueue(ctx context.Context, t T) error {
@@ -42,13 +48,12 @@ func (c *ConcurrentBlockingQueue[T]) Enqueue(ctx context.Context, t T) error {
 			return err
 		}
 	}
-	//c.data[c.tail] = t
-	//c.tail++
-	//if c.tail == len(c.data) {
-	//	c.tail = 0
-	//}
-	//c.size++
-	c.data = append(c.data, t)
+	c.data[c.tail] = t
+	c.tail++
+	if c.tail == c.maxSize {
+		c.tail = 0
+	}
+	c.size++
 	// 如果有人在等待有数据 则应该唤醒这个人 但是不能阻塞我自己
 	c.notEmptyCond.Broadcast()
 	c.lock.Unlock()
@@ -63,14 +68,13 @@ func (c *ConcurrentBlockingQueue[T]) Dequeue(ctx context.Context) (t T, err erro
 		}
 
 	}
-	//t = c.data[c.head]
-	//c.head++
-	//if c.head == len(c.data) {
-	//	c.head = 0
-	//}
-	//c.size--
-	t = c.data[0]
-	c.data = c.data[1:]
+	t = c.data[c.head]
+	c.data[c.head] = c.zero
+	c.head++
+	if c.head == c.maxSize {
+		c.head = 0
+	}
+	c.size--
 	// 如果有人在等待少个数据 则应该唤醒这个人 但是不能阻塞我自己
 	c.notFullCond.Broadcast()
 	c.lock.Unlock()
@@ -85,7 +89,7 @@ func (c *ConcurrentBlockingQueue[T]) IsEmpty() bool {
 
 // 封装一层 避免内部方法使用时重复加锁
 func (c *ConcurrentBlockingQueue[T]) isEmpty() bool {
-	return len(c.data) == 0
+	return c.size == 0
 }
 
 func (c *ConcurrentBlockingQueue[T]) IsFull() bool {
@@ -96,7 +100,7 @@ func (c *ConcurrentBlockingQueue[T]) IsFull() bool {
 
 // 封装一层 避免内部方法使用时重复加锁
 func (c *ConcurrentBlockingQueue[T]) isFull() bool {
-	return c.maxSize == len(c.data)
+	return c.maxSize == c.size
 }
 
 func (c *ConcurrentBlockingQueue[T]) Len() uint64 {
