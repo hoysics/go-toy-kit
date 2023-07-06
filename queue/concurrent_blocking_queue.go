@@ -42,7 +42,11 @@ func (c *ConcurrentBlockingQueue[T]) Get(index int) (T, error) {
 }
 
 func (c *ConcurrentBlockingQueue[T]) Enqueue(ctx context.Context, t T) error {
-	c.lock.Lock()
+	c.lock.Lock() //抢锁可能很耗时
+	if ctx.Err() != nil {
+		c.lock.Unlock()
+		return ctx.Err()
+	}
 	for c.isFull() {
 		if err := c.notFullCond.WaitWithTimeout(ctx); err != nil {
 			return err
@@ -61,7 +65,12 @@ func (c *ConcurrentBlockingQueue[T]) Enqueue(ctx context.Context, t T) error {
 }
 
 func (c *ConcurrentBlockingQueue[T]) Dequeue(ctx context.Context) (t T, err error) {
-	c.lock.Lock()
+	c.lock.Lock() //抢锁可能很耗时
+	if ctx.Err() != nil {
+		c.lock.Unlock()
+		err = ctx.Err()
+		return
+	}
 	for c.isEmpty() {
 		if err = c.notEmptyCond.WaitWithTimeout(ctx); err != nil {
 			return
