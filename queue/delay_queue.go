@@ -91,7 +91,6 @@ func (d *DelayQueue[T]) Enqueue(ctx context.Context, t T) error {
 // sleep本质上是阻塞（可以用time.Sleep 也可以用channel）
 func (d *DelayQueue[T]) Dequeue(ctx context.Context) (T, error) {
 	var sleep *time.Timer
-Loop:
 	for {
 		if ctx.Err() != nil {
 			var t T
@@ -119,14 +118,19 @@ Loop:
 		if head.Delay() <= 0 {
 			break
 		}
-		sleep = time.NewTimer(head.Delay())
 		n := d.notEarliestCond.NotifyChan()
 		d.mu.Unlock()
+		if sleep == nil {
+			sleep = time.NewTimer(head.Delay())
+		} else {
+			sleep.Reset(head.Delay())
+		}
 		select {
 		case <-sleep.C:
 			sleep.Stop()
-			d.mu.Lock()
-			break Loop
+			//如果有两个同时在等 那么这里其中一个会抢走，另外一个就获取不到元素了
+			//d.mu.Lock()
+			continue
 		case <-ctx.Done():
 			var t T
 			return t, ctx.Err()
