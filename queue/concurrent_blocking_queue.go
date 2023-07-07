@@ -49,6 +49,7 @@ func (c *ConcurrentBlockingQueue[T]) Enqueue(ctx context.Context, t T) error {
 	}
 	for c.isFull() {
 		if err := c.notFullCond.WaitWithTimeout(ctx); err != nil {
+			c.lock.Unlock()
 			return err
 		}
 	}
@@ -73,6 +74,7 @@ func (c *ConcurrentBlockingQueue[T]) Dequeue(ctx context.Context) (t T, err erro
 	}
 	for c.isEmpty() {
 		if err = c.notEmptyCond.WaitWithTimeout(ctx); err != nil {
+			c.lock.Unlock()
 			return
 		}
 

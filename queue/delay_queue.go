@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -25,6 +26,11 @@ type Delayable interface {
 
 type DelayQueue[T Delayable] struct {
 	q *PriorityQueue[T]
+
+	notEmptyCond *Cond
+	notFullCond  *Cond
+
+	mu sync.Mutex
 }
 
 func NewDelayQueue[T Delayable](capacity int) *DelayQueue[T] {
@@ -44,7 +50,18 @@ func NewDelayQueue[T Delayable](capacity int) *DelayQueue[T] {
 }
 
 // Enqueue 入队和并发阻塞队列一样
-func (d DelayQueue[T]) Enqueue(ctx context.Context, t T) error {
+func (d *DelayQueue[T]) Enqueue(ctx context.Context, t T) error {
+	d.mu.Lock()
+	for d.q.isFull() {
+		if err := d.notFullCond.WaitWithTimeout(ctx); err != nil {
+			d.mu.Unlock()
+			return err
+		}
+	}
+	err := d.q.Enqueue(t)
+	d.notEmptyCond.Broadcast()
+	d.mu.Unlock()
+	return err
 }
 
 // Dequeue 出队
@@ -55,22 +72,54 @@ func (d DelayQueue[T]) Enqueue(ctx context.Context, t T) error {
 //  4. 如果sleep的时间还没到 就超时了 则直接返回
 //
 // sleep本质上是阻塞（可以用time.Sleep 也可以用channel）
-func (d DelayQueue[T]) Dequeue(ctx context.Context) (T, error) {
+func (d *DelayQueue[T]) Dequeue(ctx context.Context) (T, error) {
+	for {
+		if ctx.Err() != nil {
+			var t T
+			return t, ctx.Err()
+		}
+		d.mu.Lock()
+		if ctx.Err() != nil {
+			var t T
+			return t, ctx.Err()
+		}
+		if d.q.isEmpty() {
+			if err := d.notEmptyCond.WaitWithTimeout(ctx); err != nil {
+				d.mu.Unlock()
+				var t T
+				return t, err
+			}
+		}
+		//等待
+		head, err := d.q.Peek()
+		if err != nil {
+			d.mu.Unlock()
+			var t T
+			return t, err
+		}
+		if head.Delay() <= 0 {
+			break
+		}
+		d.mu.Unlock()
+		time.Sleep(head.Delay())
+	}
+	t, err := d.q.Dequeue()
+	d.notFullCond.Broadcast()
+	d.mu.Unlock()
+	return t, err
+}
+
+func (d *DelayQueue[T]) IsEmpty() bool {
 	//TODO implement me
 	panic("implement me")
 }
 
-func (d DelayQueue[T]) IsEmpty() bool {
+func (d *DelayQueue[T]) IsFull() bool {
 	//TODO implement me
 	panic("implement me")
 }
 
-func (d DelayQueue[T]) IsFull() bool {
-	//TODO implement me
-	panic("implement me")
-}
-
-func (d DelayQueue[T]) Len() uint64 {
+func (d *DelayQueue[T]) Len() uint64 {
 	//TODO implement me
 	panic("implement me")
 }
